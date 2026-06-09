@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Behaviarium runtime artifacts (machine-local; never committed)
+/outputs/
+/data/
+*.db
+*.db-wal
+*.db-shm

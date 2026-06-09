@@ -1,0 +1,13 @@
+# Core (assay-agnostic) configuration.
+# Every path and global constant lives here — nothing is hardcoded in code.
+# Machine-specific values are overridable via BEHAVIARIUM_* env vars
+# (e.g. BEHAVIARIUM_DATA_ROOT). Relative paths resolve against the repo root.
+
+data_root: data                 # <data_root>/<Type>/<Class>/<video files>
+output_root: outputs
+manifest_path: manifest.db      # relative -> resolved under output_root
+
+# Single source of truth for fps: corrected_fps = actual_frame_count / recording_duration_s.
+recording_duration_s: 600
+
+video_extensions: [".mp4", ".avi", ".mov", ".mkv"]

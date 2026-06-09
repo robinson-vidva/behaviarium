@@ -1,0 +1,79 @@
+# Per-project, assay-specific config: three-chamber social interaction test.
+# Study-specific items (design matrix, cluster count, chamber rule, Class parser) live here,
+# NOT in core code. These are stubs for now and get resolved in later phases.
+
+name: pt_social
+assay: "3C_SIT"          # three-chamber social interaction test
+
+n_clusters: 14
+
+design_matrix:
+  treatment: ["Sal-N", "Sal-Hx", "LPS-N", "DH"]
+  housing: ["PT", "EE"]
+
+# Class-string parser (Phase 3): Class encodes the design matrix as "<treatment>_<housing>".
+# The named groups (and thus the allowed values) live here, NOT in core code.
+class_parser:
+  kind: regex
+  pattern: "^(?P<treatment>Sal-N|Sal-Hx|LPS-N|DH)_(?P<housing>PT|EE)$"
+
+# Chamber region scheme (Phase 3): the 6-quadrant rule expressed as DATA, not code.
+# Fractions of the boundary-ROI bbox: 3 chambers (x) x near/far (y).
+chamber:
+  tracking_bodypart: spine1
+  regions:
+    - {name: left_near,   shape: rect, x: 0.0,    y: 0.0, w: 0.3333, h: 0.5}
+    - {name: left_far,    shape: rect, x: 0.0,    y: 0.5, w: 0.3333, h: 0.5}
+    - {name: center_near, shape: rect, x: 0.3333, y: 0.0, w: 0.3334, h: 0.5}
+    - {name: center_far,  shape: rect, x: 0.3333, y: 0.5, w: 0.3334, h: 0.5}
+    - {name: right_near,  shape: rect, x: 0.6667, y: 0.0, w: 0.3333, h: 0.5}
+    - {name: right_far,   shape: rect, x: 0.6667, y: 0.5, w: 0.3333, h: 0.5}
+
+# OpenCV preprocessing (Phase 1). Three-chamber arena = rectangular ROI.
+rotate:
+  degrees: 0             # camera already upright for this rig
+  flip: null
+boundary:
+  shape: rect            # three chambers form a rectangle
+  threshold: 127
+  blur_ksize: 5
+  min_area_frac: 0.02
+  max_area_frac: 0.98
+  sample_frame: 0
+mask:
+  crop: true             # crop to the arena bbox for DLC
+  fill_value: 0
+
+# DLC pose estimation (Phase 2). PRODUCTION engine = tensorflow (real DLC on Windows).
+dlc:
+  engine: tensorflow
+  # DLC project config.yaml for double_hit_social-Javid-2022-03-21. This is a Windows-specific
+  # path; override per machine with BEHAVIARIUM_DLC_MODEL_CONFIG. Placeholder until set.
+  model_config_path: "C:/dlc/double_hit_social-Javid-2022-03-21/config.yaml"
+  shuffle: 1
+  trainingsetindex: 0
+  # Placeholder bodyparts for the STUB fallback only; the real TF model defines the
+  # authoritative set (read from the model on Windows, not from this list).
+  bodyparts: ["snout", "leftear", "rightear", "shoulder", "spine1", "spine2", "tailbase"]
+  filter:
+    enabled: false       # decision #1 default: emit _raw, do NOT fake a _filtered file
+    type: median
+    windowlength: 5
+    delegate_to_dlc: false  # flip to true on Windows for DLC-exact filterpredictions (TF only)
+
+# B-SOiD behavioral clustering (Phase 4). PRODUCTION engine = real (on Windows).
+bsoid:
+  engine: real
+  n_clusters: 14         # the 14 B-SOiD clusters for this study
+  module: "bsoid_py.classify"   # real backend import path — CONFIRM against your B-SOiD fork
+  # Trained B-SOiD model bundle (scaler + classifier). Machine-specific path; override with
+  # BEHAVIARIUM_BSOID_MODEL. Placeholder until set.
+  model_path: "C:/bsoid/models/double_hit_social_bsoid.sav"
+
+# Real significance (Phase 5). Compare by a design-matrix factor (housing: PT vs EE).
+stats:
+  group_factor: housing  # parsed-Class factor from the design matrix defines the 2 groups
+  metric: fraction
+  n_permutations: 1000
+  alpha: 0.05
+  seed: 0

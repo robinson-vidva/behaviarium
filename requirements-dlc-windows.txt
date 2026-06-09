@@ -1,0 +1,17 @@
+# Windows-only DLC pose-estimation stack (the real `tensorflow` engine).
+# NOT installable on Mac and intentionally separate from base deps — install this ONLY on the
+# Windows production box, into a Python 3.10 environment, on top of `pip install -e .`.
+#
+# The TF 2.10 GPU build needs CUDA 11.2 + cuDNN 8.1, which are easiest via conda. Recommended:
+#
+#   conda create -n behaviarium-dlc python=3.10 -y
+#   conda activate behaviarium-dlc
+#   conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1 -y
+#   pip install -e .                              # base package (this repo)
+#   pip install -r requirements-dlc-windows.txt   # the DLC stack below
+#
+# Verify the GPU is visible:
+#   python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+
+tensorflow==2.10.*
+deeplabcut==2.3.10

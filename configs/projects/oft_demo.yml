@@ -1,0 +1,68 @@
+# Per-project, assay-specific config: open-field test.
+# Present to demonstrate that the assay is purely a config dimension — adding it required no
+# core changes, only this file. Values are stubs.
+
+name: oft_demo
+assay: "OFT"            # open-field test
+
+n_clusters: 10
+
+design_matrix:
+  treatment: ["Veh", "Drug"]
+
+# Class parser (Phase 3): OFT has no coded Class — a no-op parser proves genericity
+# (core adds zero factor columns; nothing assay-specific in core).
+class_parser:
+  kind: noop
+
+# Chamber region scheme (Phase 3): open field = center vs periphery (inner-square fraction).
+# 'center' is matched first; 'periphery' is the catch-all rest of the ROI bbox.
+chamber:
+  tracking_bodypart: center
+  regions:
+    - {name: center,    shape: rect, x: 0.25, y: 0.25, w: 0.5, h: 0.5}
+    - {name: periphery, shape: rect, x: 0.0,  y: 0.0,  w: 1.0, h: 1.0}
+
+# OpenCV preprocessing (Phase 1). Open field = circular ROI; demonstrates that rotate +
+# boundary differ from 3C_SIT purely via config — no core changes.
+rotate:
+  degrees: 90            # this rig's camera is mounted sideways
+  flip: horizontal
+boundary:
+  shape: circle          # open field arena is circular
+  threshold: 127
+  blur_ksize: 5
+  min_area_frac: 0.02
+  max_area_frac: 0.98
+  sample_frame: 0
+mask:
+  crop: false
+  fill_value: 0
+
+# DLC pose estimation (Phase 2). This project runs the STUB engine — first-class, no TF needed.
+# Proves the stub is selectable purely via config and uses an assay-specific bodypart set.
+dlc:
+  engine: stub
+  shuffle: 1
+  trainingsetindex: 0
+  bodyparts: ["nose", "center", "tailbase"]
+  filter:
+    enabled: true        # exercise honest filtering: this project emits a real _filtered file
+    type: median
+    windowlength: 5
+    delegate_to_dlc: false  # stub backend uses the pandas median path
+
+# B-SOiD behavioral clustering (Phase 4). STUB engine — first-class, no heavy deps.
+# Different n_clusters from pt_social proves the cluster count is purely config.
+bsoid:
+  engine: stub
+  n_clusters: 6          # small synthetic cluster set for the stub
+
+# Real significance (Phase 5). Trivial 2-group comparison by Type (cohortA vs cohortB) —
+# the noop parser adds no factors, so grouping by a different column proves genericity.
+stats:
+  group_factor: Type
+  metric: fraction
+  n_permutations: 500
+  alpha: 0.05
+  seed: 0
