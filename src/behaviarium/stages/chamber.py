@@ -17,7 +17,6 @@ import numpy as np
 import pandas as pd
 
 from .. import dlc_io
-from ..class_parser import parse_class
 from ..config import ChamberRegion
 from ..paths import chamber_csv, chamber_parquet, dlc_output_path, video_output
 from ..registry import register
@@ -69,26 +68,26 @@ class ChamberStage(Stage):
         return [chamber_parquet(ctx.cfg, ctx.video), chamber_csv(ctx.cfg, ctx.video)]
 
     def run(self, ctx: StageContext) -> None:
-        cfg, key = ctx.cfg, ctx.video
+        cfg, vid = ctx.cfg, ctx.video
         if cfg.project.chamber is None:
             raise RuntimeError("no chamber region scheme configured for this project")
 
-        dlc_path = dlc_output_path(cfg, key, cfg.project.dlc.filter.enabled)
+        dlc_path = dlc_output_path(cfg, vid, cfg.project.dlc.filter.enabled)
         if not dlc_path.exists():
             raise RuntimeError(f"chamber requires the dlc output; run dlc first: {dlc_path}")
 
         rec = ctx.video_record()
-        fps = rec.get("fps") if rec else None  # corrected_fps = frame_count/600 (decision #3)
+        fps = rec.get("fps") if rec else None  # corrected_fps (decision #3)
         if not fps or fps <= 0:
-            raise RuntimeError(f"missing corrected_fps for {key}; run ingest first")
+            raise RuntimeError(f"missing corrected_fps for {vid}; run ingest first")
 
         # tracking point BY NAME via the multiindex reader (never positional x.1/x.11)
         df = dlc_io.read_dlc_csv(dlc_path)
         bp = dlc_io.get_bodypart(df, cfg.project.chamber.tracking_bodypart)
         px, py = bp["x"].to_numpy(dtype=float), bp["y"].to_numpy(dtype=float)
 
-        mask_video = video_output(cfg, key, "mask")
-        rx, ry, rw, rh = _roi_bbox_in_analysis(cfg, key, ctx.manifest, probe_dims(mask_video))
+        mask_video = video_output(cfg, vid, "mask")
+        rx, ry, rw, rh = _roi_bbox_in_analysis(cfg, vid, ctx.manifest, probe_dims(mask_video))
         nx = (px - rx) / rw
         ny = (py - ry) / rh
 
@@ -97,8 +96,8 @@ class ChamberStage(Stage):
         counts = Counter(labels.tolist())
         total = int(len(labels))
 
-        factors = parse_class(key.klass, cfg.project.class_parser)
-
+        factors = ctx.factors()  # design-factor columns from the video's tag (replaces Class parser)
+        factor_cols = list(factors.keys())
         names = [r.name for r in regions]
         if counts.get("none", 0):
             names = names + ["none"]
@@ -107,9 +106,8 @@ class ChamberStage(Stage):
             c = int(counts.get(name, 0))
             rows.append(
                 {
-                    "Type": key.type,
-                    "Class": key.klass,
-                    "Filename": key.filename,
+                    "video_id": vid,
+                    "filename": rec["filename"],
                     **factors,
                     "region": name,
                     "frame_count": c,
@@ -117,18 +115,17 @@ class ChamberStage(Stage):
                     "fraction": (c / total) if total else 0.0,
                 }
             )
-        factor_cols = list(factors.keys())
         long_df = pd.DataFrame(rows)[
-            ["Type", "Class", "Filename", *factor_cols, "region", "frame_count", "time_s", "fraction"]
+            ["video_id", "filename", *factor_cols, "region", "frame_count", "time_s", "fraction"]
         ]
 
-        pq, csv = chamber_parquet(cfg, key), chamber_csv(cfg, key)
+        pq, csv = chamber_parquet(cfg, vid), chamber_csv(cfg, vid)
         pq.parent.mkdir(parents=True, exist_ok=True)
         long_df.to_parquet(pq, index=False)  # for R (separate manual step); Python never calls R
         long_df.to_csv(csv, index=False)
 
         ctx.manifest.set_params(
-            key,
+            vid,
             self.name,
             {
                 "tracking_bodypart": cfg.project.chamber.tracking_bodypart,

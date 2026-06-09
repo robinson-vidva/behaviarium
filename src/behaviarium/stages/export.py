@@ -26,8 +26,8 @@ from ..paths import (
     stats_bsoid_table,
     stats_chamber_table,
 )
-from ..manifest import VideoKey
 from ..registry import register
+from ..runner import eligible_video_ids
 from ..stage import Stage, StageContext, StageScope
 
 # (bundle name, producing stage, source-path function). Each is one canonical file (parquet+csv).
@@ -38,12 +38,11 @@ _SINGLE_DATASETS = [
     ("region_stats", "stats", stats_chamber_table),
 ]
 
-_BASE_COLS = {"Type", "Class", "Filename"}
+_BASE_COLS = {"video_id", "filename"}
 
 _COLUMN_DOCS = {
-    "Type": "Join-key part 1 (top-level grouping directory under data_root)",
-    "Class": "Join-key part 2 (raw Class string; parsed into factor columns)",
-    "Filename": "Join-key part 3 (source video filename)",
+    "video_id": "Primary identity — stable filename slug (the join key across all datasets)",
+    "filename": "Original source video filename",
     "cluster": "B-SOiD behavioral cluster index (0..n_clusters-1)",
     "region": "Arena region name (from the per-project region scheme)",
     "frame": "Frame index (0-based)",
@@ -60,7 +59,7 @@ _COLUMN_DOCS = {
     "q_value": "Benjamini-Hochberg FDR-adjusted p-value across units",
     "significant": "q_value < alpha",
 }
-_FALLBACK_DOC = "Parsed Class factor / value column"
+_FALLBACK_DOC = "Design factor column (from tagging) / value column"
 
 
 def _require(path: Path, producer: str) -> Path:
@@ -105,17 +104,12 @@ class ExportStage(Stage):
         # 2) per-video B-SOiD per-frame labels (copied, never concatenated/transformed)
         labels_dir = bundle / "bsoid_labels"
         labels_dir.mkdir(parents=True, exist_ok=True)
-        keys = [
-            VideoKey(v["type"], v["class"], v["filename"])
-            for v in ctx.manifest.list_videos()
-            if v.get("include", 1)
-        ]
+        video_ids = eligible_video_ids(cfg, ctx.manifest, self.name)
         parts, total_rows, schema = [], 0, None
-        for key in keys:
-            src_pq = _require(bsoid_labels_parquet(cfg, key), "bsoid")
-            src_csv = _require(bsoid_labels_csv(cfg, key), "bsoid")
-            stem = Path(key.filename).stem
-            base = f"{key.type}__{key.klass}__{stem}__bsoid_labels"
+        for vid in video_ids:
+            src_pq = _require(bsoid_labels_parquet(cfg, vid), "bsoid")
+            src_csv = _require(bsoid_labels_csv(cfg, vid), "bsoid")
+            base = f"{vid}__bsoid_labels"
             shutil.copyfile(src_pq, labels_dir / f"{base}.parquet")
             shutil.copyfile(src_csv, labels_dir / f"{base}.csv")
             df = pd.read_parquet(labels_dir / f"{base}.parquet")
@@ -123,7 +117,7 @@ class ExportStage(Stage):
             total_rows += int(len(df))
             parts.append(
                 {
-                    "key": [key.type, key.klass, key.filename],
+                    "video_id": vid,
                     "parquet": f"bsoid_labels/{base}.parquet",
                     "csv": f"bsoid_labels/{base}.csv",
                     "rows": int(len(df)),
@@ -138,7 +132,7 @@ class ExportStage(Stage):
             "parts": parts,
         }
 
-        # factor columns = whatever the Class parser added (present in the chamber aggregate)
+        # factor columns = design-factor tags carried into the chamber aggregate
         chamber_cols = datasets["chamber_long"]["columns"]
         known = _BASE_COLS | {"region", "frame_count", "time_s", "fraction"}
         factors = [c for c in chamber_cols if c not in known]
@@ -148,11 +142,12 @@ class ExportStage(Stage):
             "project": cfg.project.name,
             "assay": cfg.assay,
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "join_key": ["Type", "Class", "Filename"],
+            "join_key": ["video_id"],
             "corrected_fps": {
                 "formula": "frame_count / recording_duration_s",
                 "recording_duration_s": cfg.recording_duration_s,
             },
+            "design_factors": [{"name": f.name, "levels": f.levels} for f in cfg.project.design.factors],
             "factors": factors,
             "n_clusters": n_clusters,
             "datasets": datasets,
@@ -166,7 +161,7 @@ class ExportStage(Stage):
             {
                 "bundle_dir": str(bundle),
                 "datasets": {k: (v.get("rows")) for k, v in datasets.items()},
-                "n_videos": len(keys),
+                "n_videos": len(video_ids),
                 "manifest": str(bundle / "export_manifest.json"),
             },
         )
@@ -180,10 +175,10 @@ def _data_dictionary(m: dict, cfg) -> str:
     lines = [
         f"# {m['project']} ({m['assay']}) — data dictionary",
         "",
-        "Join key: **(Type, Class, Filename)** — present in every dataset; join on this triple.",
+        "Join key: **video_id** — present in every dataset; join on it.",
         f"corrected_fps = frame_count / recording_duration_s "
         f"(recording_duration_s = {m['corrected_fps']['recording_duration_s']}).",
-        f"Parsed factor columns: {', '.join(m['factors']) or '(none)'}.  "
+        f"Design-factor columns (from tagging): {', '.join(m['factors']) or '(none)'}.  "
         f"n_clusters = {m['n_clusters']}.",
         "",
     ]
@@ -197,7 +192,7 @@ def _data_dictionary(m: dict, cfg) -> str:
         "## How to load",
         "- Python: `pandas.read_parquet(\"chamber_long.parquet\")` (or `read_csv`).",
         "- R: `arrow::read_parquet(\"chamber_long.parquet\")` or `readr::read_csv(\"chamber_long.csv\")`.",
-        "- Join any datasets on the (Type, Class, Filename) triple.",
+        "- Join any datasets on `video_id`.",
         "",
     ]
     return "\n".join(lines)

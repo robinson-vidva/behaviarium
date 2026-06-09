@@ -25,11 +25,34 @@ Target assays: mouse three-chamber social interaction test (`3C_SIT`) and open-f
 - **Single `pydantic-settings` + YAML config** holds **EVERY** path, constant, and the
   experimental design matrix. The config is the declarative "setup file." **No hardcoded
   paths or constants anywhere in code.**
-- **Stage contract:** each stage (`ingest`, `rotate`, `boundary`, `dlc`, `chamber`, `mask`,
-  `bsoid`, `postprocess`) is one **idempotent** unit with a uniform interface — inputs from
-  manifest + config, outputs to known paths, status update. **Single-source each stage** —
-  no forked variants.
-- **Join key everywhere:** the `(Type, Class, Filename)` triple.
+- **Stage contract:** each stage (`ingest`, `rotate`, `boundary`, `mask`, `dlc`, `chamber`,
+  `bsoid`, `postprocess`, `stats`, `export`) is one **idempotent** unit with a uniform
+  interface — inputs from manifest + config, outputs to known paths, status update.
+  **Single-source each stage** — no forked variants.
+
+## Project model (Phase 7 — supersedes the old data layout)
+
+- **Data lives OUTSIDE the repo. The repo is the installed tool.** A **project is a separate
+  folder**, scaffolded by `behaviarium init-project <project_dir> --data <data_path>`. The
+  repo's `configs/projects/*.yml` are **TEMPLATES**, not live config; `init-project` copies one
+  into `<project_dir>/project.yml`. The manifest (`<project_dir>/manifest.db`), `outputs/`, and
+  per-video folders all resolve under `<project_dir>`. **Nothing project-specific is written
+  inside the repo.**
+- **Raw video sits in ANY folder layout** under `data_path` and stays put by default. `ingest`
+  scans recursively (flat or nested).
+- **Primary identity = stable `video_id`** (filename slug, deduped on collision), with
+  `source_path` (original) + `current_path` recorded. **`video_id` is the join key everywhere**
+  — in the manifest and ALL tidy outputs. (Replaces the old `(Type, Class, Filename)` triple
+  and the Class-string parser.)
+- **Per-video folder** `<project_dir>/videos/<video_id>/` always exists — home for sidecars and
+  that video's stage outputs/metadata that don't belong in the DB.
+- **Design factors + tagging** replace folder-derived Type/Class. `project.yml` declares
+  `design.factors` (ordered `{name, levels}`; cells = product of level counts). The user tags
+  each video into a cell in the UI; the tag becomes the factor columns carried alongside
+  `video_id` downstream. **Untagged or excluded videos are skipped by the runner.**
+- **Reorg is an explicit user action** (never automatic): `copy` (default) | `move` | `symlink`
+  the source into its per-video folder; idempotent, never overwrites, verifies before updating
+  `current_path`.
 
 ## Platform strategy (v1)
 
@@ -77,9 +100,11 @@ Target assays: mouse three-chamber social interaction test (`3C_SIT`) and open-f
 4. **Network `P_Value = 1 - normalized_weight` is NOT a real p-value.** Rename to a
    **display-weight** column. Reserve "p-value" / "significance" for the real **Wasserstein
    permutation + Benjamini-Hochberg** results only.
-5. **Study-specific items live in per-project config** (`configs/projects/pt_social.yml`),
-   **not** core code: the design matrix (`Sal-N` / `Sal-Hx` / `LPS-N` / `DH` × `PT` / `EE`),
-   the 14 clusters, the 6-quadrant chamber rule, and the `Class`-string parser.
+5. **Study-specific items live in per-project config** (the project's `project.yml`, copied
+   from a repo template), **not** core code: the design matrix as `design.factors`
+   (`treatment: Sal-N/Sal-Hx/LPS-N/DH` × `housing: PT/EE`), the 14 clusters, and the
+   6-quadrant chamber rule. *(Phase 7: the `Class`-string parser is GONE — factor columns now
+   come from UI **tagging** of each `video_id` into a design cell.)*
 
 ## Build process
 

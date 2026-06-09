@@ -1,22 +1,22 @@
-"""Configuration: one core (assay-agnostic) layer + one per-project (assay-specific) layer.
+"""Configuration (Phase 7): the repo is the installed tool; a PROJECT is an external folder.
 
-The loader merges ``configs/core.yml`` with ``configs/projects/<project>.yml``. No paths or
-constants are hardcoded elsewhere in the codebase; everything machine-specific (notably
-``data_root``) is overridable via ``BEHAVIARIUM_*`` environment variables.
+``configs/core.yml`` (in the repo) holds global defaults. ``configs/projects/*.yml`` are now
+TEMPLATES — ``init_project`` copies one into ``<project_dir>/project.yml``. All project paths
+(manifest, outputs, per-video folders) resolve under ``<project_dir>``; the raw video
+``data_path`` lives anywhere and is recorded in the project config (env-overridable).
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic_settings import (
-    BaseSettings,
-    SettingsConfigDict,
-    YamlConfigSettingsSource,
-)
+from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
+
+PROJECT_CONFIG_NAME = "project.yml"
 
 
 def repo_root() -> Path:
@@ -29,125 +29,83 @@ def default_config_dir() -> Path:
     return Path(env) if env else repo_root() / "configs"
 
 
+def template_path(name: str) -> Path:
+    return default_config_dir() / "projects" / f"{name}.yml"
+
+
 def _abs(p: Path, base: Path) -> Path:
-    """Resolve ``p`` against ``base`` when relative; absolute paths pass through."""
     p = Path(p)
     return p if p.is_absolute() else (base / p)
 
 
 class CoreConfig(BaseSettings):
-    """Assay-agnostic settings. Loaded from YAML; ``BEHAVIARIUM_*`` env vars take precedence."""
+    """Global, project-agnostic defaults. ``BEHAVIARIUM_*`` env vars take precedence."""
 
     model_config = SettingsConfigDict(env_prefix="BEHAVIARIUM_", extra="ignore")
 
-    data_root: Path = Path("data")
-    output_root: Path = Path("outputs")
-    manifest_path: Path = Path("manifest.db")  # relative -> resolved under output_root
-    # Single source of truth for fps: corrected fps = frame_count / recording_duration_s.
     recording_duration_s: float = 600.0
     video_extensions: list[str] = Field(default_factory=lambda: [".mp4", ".avi", ".mov", ".mkv"])
 
     @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls,
-        init_settings,
-        env_settings,
-        dotenv_settings,
-        file_secret_settings,
-    ):
-        # Precedence: explicit init > env > YAML file. (env overrides the YAML on disk.)
-        return (
-            init_settings,
-            env_settings,
-            YamlConfigSettingsSource(settings_cls),
-            file_secret_settings,
-        )
+    def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings):
+        return (init_settings, env_settings, YamlConfigSettingsSource(settings_cls), file_secret_settings)
 
 
 def _load_core(yaml_path: Path) -> CoreConfig:
-    # Subclass to inject the resolved YAML path into model_config for the YAML source.
     class _Core(CoreConfig):
-        model_config = SettingsConfigDict(
-            env_prefix="BEHAVIARIUM_", extra="ignore", yaml_file=str(yaml_path)
-        )
+        model_config = SettingsConfigDict(env_prefix="BEHAVIARIUM_", extra="ignore", yaml_file=str(yaml_path))
 
     return _Core()
 
 
+# --- stage params (unchanged across Phase 7 except chamber/stats key on factors) ---
 class RotateParams(BaseModel):
-    """Orientation correction. Generic across assays; values come from per-project config."""
-
     model_config = ConfigDict(extra="forbid")
-
-    degrees: float = 0.0  # clockwise; 90/180/270 are exact, other angles expand the canvas
-    flip: str | None = None  # "horizontal" | "vertical" | "both" | None
-    auto: bool = False  # hook for future auto-detection — NOT implemented this phase
+    degrees: float = 0.0
+    flip: str | None = None
+    auto: bool = False
 
 
 class BoundaryParams(BaseModel):
-    """Arena-ROI auto-detection params. Generic geometry (rect or circle) fits every assay."""
-
     model_config = ConfigDict(extra="forbid")
-
-    shape: str = "rect"  # shape hint: "rect" | "circle"
-    threshold: int = 127  # binary threshold separating bright arena from background
-    blur_ksize: int = 5  # Gaussian blur kernel (odd; <=1 disables)
-    min_area_frac: float = 0.05  # contour area bounds as a fraction of the frame
+    shape: str = "rect"
+    threshold: int = 127
+    blur_ksize: int = 5
+    min_area_frac: float = 0.05
     max_area_frac: float = 0.95
-    pixel_min: int = 0  # optional intensity gate applied on top of the threshold
+    pixel_min: int = 0
     pixel_max: int = 255
-    sample_frame: int = 0  # frame index sampled for detection + preview overlay
+    sample_frame: int = 0
 
 
 class MaskParams(BaseModel):
-    """How the approved ROI is applied to produce the DLC-ready video."""
-
     model_config = ConfigDict(extra="forbid")
-
-    crop: bool = False  # also crop to the ROI bounding box
-    fill_value: int = 0  # value written outside the ROI
+    crop: bool = False
+    fill_value: int = 0
 
 
 class DlcFilter(BaseModel):
-    """Decision #1: filtering is honest and config-driven. Disabled => _raw, no filter step.
-    Enabled => actually filter and name _filtered. Never emit _filtered that wasn't filtered."""
-
     model_config = ConfigDict(extra="forbid")
-
     enabled: bool = False
-    type: str = "median"  # "median" (backend-independent) | "arima" (optional)
+    type: str = "median"
     windowlength: int = 5
-    # false: our pandas rolling median (backend-independent, testable on Mac).
-    # true: delegate to deeplabcut.filterpredictions — DLC-exact, tensorflow backend ONLY.
     delegate_to_dlc: bool = False
 
 
 class DlcParams(BaseModel):
-    """Pose-estimation params. Engine-aware, one interface; v1 real engine is tensorflow.
-    The stub is first-class so Mac dev never needs TF/DLC."""
-
-    # ``protected_namespaces=()`` so the ``model_config_path`` field is allowed (pydantic v2
-    # otherwise reserves the ``model_`` prefix).
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
-
-    engine: str = "tensorflow"  # "tensorflow" (real, lazy import) | "stub" (synthetic)
-    model_config_path: str | None = None  # DLC project config.yaml; env-overridable per machine
+    engine: str = "tensorflow"
+    model_config_path: str | None = None
     shuffle: int = 1
     trainingsetindex: int = 0
-    bodyparts: list[str] = Field(default_factory=list)  # used by the stub backend
+    bodyparts: list[str] = Field(default_factory=list)
     filter: DlcFilter = Field(default_factory=DlcFilter)
 
 
 class ChamberRegion(BaseModel):
-    """One named spatial region, in fractions [0,1] of the boundary-ROI bbox. Generic geometry:
-    rect (x, y, w, h) or circle (cx, cy, r). The assay decides the regions; core just maps
-    points to whichever regions the config declares."""
-
     model_config = ConfigDict(extra="forbid")
-
     name: str
-    shape: str = "rect"  # "rect" | "circle"
+    shape: str = "rect"
     x: float = 0.0
     y: float = 0.0
     w: float = 1.0
@@ -158,109 +116,112 @@ class ChamberRegion(BaseModel):
 
 
 class ChamberParams(BaseModel):
-    """Region scheme for occupancy. ``regions`` are tried in order; first match wins."""
-
     model_config = ConfigDict(extra="forbid")
-
     tracking_bodypart: str
     regions: list[ChamberRegion] = Field(default_factory=list)
 
 
-class ClassParser(BaseModel):
-    """Study-specific parser turning the ``Class`` string into factor columns. Core is generic:
-    ``noop`` yields no factors; ``regex`` extracts named groups. No design-matrix literals here —
-    the pattern (and thus the allowed values) live in per-project config."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    kind: str = "noop"  # "noop" | "regex"
-    pattern: str | None = None  # for kind=regex: named groups become factor columns
-
-
 class BsoidParams(BaseModel):
-    """B-SOiD behavioral clustering. Engine-aware like dlc; the stub exercises the full
-    frameshift reconstruction without heavy deps."""
-
-    # ``protected_namespaces=()`` so the ``model_path`` field name is allowed.
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
-
-    engine: str = "real"  # "real" (lazy import) | "stub" (synthetic per-10Hz predictions)
-    n_clusters: int  # B-SOiD model cluster count (range(n_clusters) for the summary)
-    module: str = "bsoid_py.classify"  # real backend import path — CONFIRM per B-SOiD fork
-    model_path: str | None = None  # trained B-SOiD model bundle; env-overridable per machine
+    engine: str = "real"
+    n_clusters: int
+    module: str = "bsoid_py.classify"
+    model_path: str | None = None
 
 
 class StatsParams(BaseModel):
-    """Real significance path. ``group_factor`` is a column in the tidy long output (a parsed
-    Class factor, or Type/Class) defining the two groups to compare — config-driven, so the
-    comparison differs per project with no core change."""
+    """``group_factor`` is a design-factor name; the two groups are its first two levels."""
 
     model_config = ConfigDict(extra="forbid")
-
-    group_factor: str  # column that defines the groups (e.g. a design-matrix factor)
-    metric: str = "fraction"  # per-video value compared per cluster/region
+    group_factor: str
+    metric: str = "fraction"
     n_permutations: int = 1000
     alpha: float = 0.05
-    seed: int = 0  # reproducible permutations
+    seed: int = 0
+
+
+# --- design matrix (Phase 7) ---
+class DesignFactor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    levels: list[str]
+
+
+class DesignConfig(BaseModel):
+    """Ordered factors; the cells are the Cartesian product of levels (fully generic)."""
+
+    model_config = ConfigDict(extra="forbid")
+    factors: list[DesignFactor] = Field(default_factory=list)
+
+    def factor_names(self) -> list[str]:
+        return [f.name for f in self.factors]
+
+    def n_cells(self) -> int:
+        n = 1
+        for f in self.factors:
+            n *= len(f.levels)
+        return n
+
+    def cells(self) -> list[dict[str, str]]:
+        cells: list[dict[str, str]] = [{}]
+        for f in self.factors:
+            cells = [{**c, f.name: lv} for c in cells for lv in f.levels]
+        return cells
 
 
 class ProjectConfig(BaseModel):
-    """Per-project, assay-specific config. ``assay`` is a free-form string (not a closed enum),
-    so new assays are added via config + registered stage variants, with no core changes."""
+    """Per-project config, loaded from an external ``<project_dir>/project.yml``."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    assay: str  # e.g. "3C_SIT", "OFT" — documented in configs, not enforced in core
+    assay: str
+    data_path: str  # raw video root — any layout; env-overridable via BEHAVIARIUM_DATA_PATH
     n_clusters: int
-    design_matrix: dict[str, list[str]] = Field(default_factory=dict)
-    # Recording length override (s). None => use core's value. corrected_fps = frames / this.
     recording_duration_s: float | None = None
-    # OpenCV preprocessing params (Phase 1). Defaults keep these optional per project.
+    design: DesignConfig = Field(default_factory=DesignConfig)
     rotate: RotateParams = Field(default_factory=RotateParams)
     boundary: BoundaryParams = Field(default_factory=BoundaryParams)
     mask: MaskParams = Field(default_factory=MaskParams)
-    # DLC pose estimation (Phase 2).
     dlc: DlcParams = Field(default_factory=DlcParams)
-    # Chamber occupancy + Class parsing (Phase 3).
     chamber: ChamberParams | None = None
-    class_parser: ClassParser = Field(default_factory=ClassParser)
-    # B-SOiD behavioral clustering (Phase 4).
     bsoid: BsoidParams | None = None
-    # Aggregation + real significance (Phase 5).
     stats: StatsParams | None = None
 
 
-def _load_project(yaml_path: Path) -> ProjectConfig:
+def _load_project_config(yaml_path: Path) -> ProjectConfig:
     data = yaml.safe_load(yaml_path.read_text()) or {}
     return ProjectConfig.model_validate(data)
 
 
 class Config(BaseModel):
-    """Merged view of core + one project, with resolved (absolute) paths."""
+    """Active project: its config + the external project_dir + global core defaults."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     core: CoreConfig
     project: ProjectConfig
-    config_dir: Path
-    root: Path
+    project_dir: Path
 
     @property
-    def data_root(self) -> Path:
-        return _abs(self.core.data_root, self.root)
-
-    @property
-    def output_root(self) -> Path:
-        return _abs(self.core.output_root, self.root)
+    def data_path(self) -> Path:
+        env = os.environ.get("BEHAVIARIUM_DATA_PATH")
+        return _abs(Path(env or self.project.data_path), self.project_dir)
 
     @property
     def manifest_path(self) -> Path:
-        return _abs(self.core.manifest_path, self.output_root)
+        return self.project_dir / "manifest.db"
+
+    @property
+    def outputs_dir(self) -> Path:
+        return self.project_dir / "outputs"
+
+    @property
+    def videos_dir(self) -> Path:
+        return self.project_dir / "videos"
 
     @property
     def recording_duration_s(self) -> float:
-        # Per-project override wins over core (which itself is env-overridable per machine).
         if self.project.recording_duration_s is not None:
             return self.project.recording_duration_s
         return self.core.recording_duration_s
@@ -269,7 +230,6 @@ class Config(BaseModel):
     def video_extensions(self) -> list[str]:
         return list(self.core.video_extensions)
 
-    # Convenience passthroughs to the active project.
     @property
     def assay(self) -> str:
         return self.project.assay
@@ -279,25 +239,49 @@ class Config(BaseModel):
         return self.project.n_clusters
 
 
-def load_config(project: str, config_dir: Path | None = None) -> Config:
-    """Select and merge core + one project config."""
-    config_dir = Path(config_dir) if config_dir else default_config_dir()
-    core = _load_core(config_dir / "core.yml")
-    proj = _load_project(config_dir / "projects" / f"{project}.yml")
-    return Config(core=core, project=proj, config_dir=config_dir, root=repo_root())
+def load_project(project_dir: Path | str) -> Config:
+    """Open an existing project folder."""
+    project_dir = Path(project_dir).resolve()
+    cfg_path = project_dir / PROJECT_CONFIG_NAME
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"Not a Behaviarium project (no {PROJECT_CONFIG_NAME}): {project_dir}")
+    core = _load_core(default_config_dir() / "core.yml")
+    project = _load_project_config(cfg_path)
+    return Config(core=core, project=project, project_dir=project_dir)
+
+
+def init_project(project_dir: Path | str, data_path: Path | str, template: str = "pt_social") -> Config:
+    """Scaffold a NEW external project folder from a repo template. Writes nothing into the repo."""
+    project_dir = Path(project_dir).resolve()
+    tmpl = template_path(template)
+    if not tmpl.exists():
+        raise FileNotFoundError(f"No project template named {template!r} ({tmpl})")
+    if (project_dir / PROJECT_CONFIG_NAME).exists():
+        raise FileExistsError(f"Project already initialized: {project_dir}")
+
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "outputs").mkdir(exist_ok=True)
+    (project_dir / "videos").mkdir(exist_ok=True)
+
+    # copy the template, then record the chosen data_path inside the project config
+    data = yaml.safe_load(tmpl.read_text()) or {}
+    data["data_path"] = str(Path(data_path))
+    (project_dir / PROJECT_CONFIG_NAME).write_text(yaml.safe_dump(data, sort_keys=False))
+
+    cfg = load_project(project_dir)
+    from .manifest import Manifest  # local import to avoid a cycle
+
+    Manifest(cfg.manifest_path).init()
+    return cfg
 
 
 def resolve_dlc_model_config(cfg: Config) -> Path | None:
-    """DLC project config.yaml path for the real backend. ``BEHAVIARIUM_DLC_MODEL_CONFIG`` env
-    overrides the per-project value (the model lives at a machine-specific path on Windows)."""
     env = os.environ.get("BEHAVIARIUM_DLC_MODEL_CONFIG")
     raw = env or cfg.project.dlc.model_config_path
     return Path(raw) if raw else None
 
 
 def resolve_bsoid_model(cfg: Config) -> Path | None:
-    """Trained B-SOiD model path for the real backend. ``BEHAVIARIUM_BSOID_MODEL`` env overrides
-    the per-project value (machine-specific path on Windows)."""
     env = os.environ.get("BEHAVIARIUM_BSOID_MODEL")
     raw = env or (cfg.project.bsoid.model_path if cfg.project.bsoid else None)
     return Path(raw) if raw else None

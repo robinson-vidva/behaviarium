@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..manifest import VideoKey
 from ..paths import (
     bsoid_clusters_parquet,
     chamber_parquet,
@@ -19,28 +18,27 @@ from ..paths import (
     postprocess_chamber_long,
 )
 from ..registry import register
+from ..runner import eligible_video_ids
 from ..stage import Stage, StageContext, StageScope
 
 
-def _included_keys(ctx: StageContext) -> list[VideoKey]:
-    return [
-        VideoKey(v["type"], v["class"], v["filename"])
-        for v in ctx.manifest.list_videos()
-        if v.get("include", 1)
-    ]
-
-
-def _aggregate(keys, per_video_path, cfg, what: str) -> pd.DataFrame:
+def _aggregate(video_ids, per_video_path, cfg, manifest, what: str) -> pd.DataFrame:
+    """Concatenate per-video outputs, attaching design-factor columns from each video's CURRENT
+    tag (authoritative — so a video processed pre-tag and tagged later aggregates correctly)."""
+    factor_names = cfg.project.design.factor_names()
     frames = []
-    for key in keys:
-        p = per_video_path(cfg, key)
+    for vid in video_ids:
+        p = per_video_path(cfg, vid)
         if not p.exists():
-            raise RuntimeError(
-                f"postprocess: missing {what} output for {key.type}/{key.klass}/{key.filename}; "
-                f"run {what} first ({p})"
-            )
-        frames.append(pd.read_parquet(p))
-    return pd.concat(frames, ignore_index=True)
+            raise RuntimeError(f"postprocess: missing {what} output for {vid}; run {what} first ({p})")
+        df = pd.read_parquet(p)
+        tag = manifest.get_tag(vid) or {}
+        for name in factor_names:
+            df[name] = tag.get(name)
+        frames.append(df)
+    out = pd.concat(frames, ignore_index=True)
+    lead = [c for c in ["video_id", "filename", *factor_names] if c in out.columns]
+    return out[lead + [c for c in out.columns if c not in lead]]
 
 
 @register("postprocess")
@@ -57,12 +55,12 @@ class PostprocessStage(Stage):
 
     def run(self, ctx: StageContext) -> None:
         cfg = ctx.cfg
-        keys = _included_keys(ctx)
-        if not keys:
-            raise RuntimeError("postprocess: no included videos to aggregate")
+        video_ids = eligible_video_ids(cfg, ctx.manifest, self.name)  # included AND tagged
+        if not video_ids:
+            raise RuntimeError("postprocess: no included+tagged videos to aggregate")
 
-        bsoid_long = _aggregate(keys, bsoid_clusters_parquet, cfg, "bsoid")
-        chamber_long = _aggregate(keys, chamber_parquet, cfg, "chamber")
+        bsoid_long = _aggregate(video_ids, bsoid_clusters_parquet, cfg, ctx.manifest, "bsoid")
+        chamber_long = _aggregate(video_ids, chamber_parquet, cfg, ctx.manifest, "chamber")
 
         bl_pq, bl_csv = postprocess_bsoid_long(cfg, ".parquet"), postprocess_bsoid_long(cfg, ".csv")
         cl_pq, cl_csv = postprocess_chamber_long(cfg, ".parquet"), postprocess_chamber_long(cfg, ".csv")
@@ -76,7 +74,7 @@ class PostprocessStage(Stage):
             ctx.video,
             self.name,
             {
-                "n_videos": len(keys),
+                "n_videos": len(video_ids),
                 "bsoid_long_parquet": str(bl_pq),
                 "bsoid_long_csv": str(bl_csv),
                 "chamber_long_parquet": str(cl_pq),

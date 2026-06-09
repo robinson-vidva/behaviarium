@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from .config import Config
-from .manifest import Manifest, VideoKey
+from .manifest import Manifest
 
 
 class StageScope(str, Enum):
@@ -25,29 +25,25 @@ class StageScope(str, Enum):
 
 @dataclass
 class StageContext:
-    """Everything a stage needs: config, manifest, and (for video-scoped stages) the video."""
+    """Everything a stage needs: config, manifest, and (for video-scoped stages) the video_id."""
 
     cfg: Config
     manifest: Manifest
-    video: VideoKey | None = None
-
-    @property
-    def data_root(self) -> Path:
-        return self.cfg.data_root
-
-    @property
-    def output_root(self) -> Path:
-        return self.cfg.output_root
+    video: str | None = None  # video_id (or PROJECT_ID for project-scoped stages)
 
     def video_record(self) -> dict | None:
         return self.manifest.get_video(self.video) if self.video else None
 
     def source_path(self) -> Path:
-        """Absolute path to the original source video (recorded by ingest)."""
+        """Where the video currently lives (source by default, or its per-video folder if reorged)."""
         rec = self.video_record()
-        if not rec or not rec.get("path"):
-            raise RuntimeError(f"No ingested source path for {self.video}; run ingest first")
-        return Path(rec["path"])
+        if not rec or not rec.get("current_path"):
+            raise RuntimeError(f"No ingested video {self.video!r}; run ingest first")
+        return Path(rec["current_path"])
+
+    def factors(self) -> dict[str, str]:
+        """The video's design-factor columns (from its tag); {} if untagged."""
+        return self.manifest.get_tag(self.video) or {}
 
 
 class Stage(ABC):

@@ -23,7 +23,7 @@ import numpy as np
 
 from .. import dlc_io
 from ..config import resolve_dlc_model_config
-from ..paths import dlc_filtered_path, dlc_output_path, dlc_raw_path, stage_dir, video_output
+from ..paths import dlc_filtered_path, dlc_output_path, dlc_raw_path, video_dir, video_output
 from ..registry import register
 from ..stage import Stage, StageContext
 from ..video import probe_dims, probe_frame_count
@@ -135,7 +135,7 @@ class DlcStage(Stage):
 
         n_frames = probe_frame_count(mask_video)
         dims = probe_dims(mask_video)
-        dest_dir = stage_dir(ctx.cfg, ctx.video, self.name)
+        dest_dir = video_dir(ctx.cfg, ctx.video)
         raw_path = dlc_raw_path(ctx.cfg, ctx.video)
 
         # --- backend selection (engine-aware, one interface) ---

@@ -223,3 +223,6 @@ __marimo__/
 *.db
 *.db-wal
 *.db-shm
+
+# macOS
+.DS_Store

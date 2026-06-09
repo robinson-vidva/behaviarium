@@ -20,7 +20,6 @@ import pandas as pd
 
 from .. import dlc_io
 from ..bsoid_reconstruct import n_shift_for_fps, offset_lengths, reconstruct_labels
-from ..class_parser import parse_class
 from ..config import resolve_bsoid_model
 from ..paths import (
     bsoid_clusters_csv,
@@ -81,23 +80,23 @@ class BsoidStage(Stage):
         ]
 
     def run(self, ctx: StageContext) -> None:
-        cfg, key = ctx.cfg, ctx.video
+        cfg, vid = ctx.cfg, ctx.video
         p = cfg.project.bsoid
         if p is None:
             raise RuntimeError("no bsoid params configured for this project")
 
-        dlc_path = dlc_output_path(cfg, key, cfg.project.dlc.filter.enabled)
+        dlc_path = dlc_output_path(cfg, vid, cfg.project.dlc.filter.enabled)
         if not dlc_path.exists():
             raise RuntimeError(f"bsoid requires the dlc output; run dlc first: {dlc_path}")
 
         rec = ctx.video_record()
         fps = rec.get("fps") if rec else None  # corrected_fps (decision #3); never a literal
         if not fps or fps <= 0:
-            raise RuntimeError(f"missing corrected_fps for {key}; run ingest first")
+            raise RuntimeError(f"missing corrected_fps for {vid}; run ingest first")
 
         pose = dlc_io.read_dlc_csv(dlc_path)
         n_frames = int(len(pose))
-        n_shift = n_shift_for_fps(fps)  # round(fps/10), per-video
+        n_shift = n_shift_for_fps(fps)  # floor(fps/10), per-video
         n_clusters = p.n_clusters
 
         if p.engine == "stub":
@@ -116,14 +115,14 @@ class BsoidStage(Stage):
         labels = reconstruct_labels(streams, n_frames)  # frameshift + flatten('F'); len == n_frames
         n_shift_used = len(streams)
 
-        factors = parse_class(key.klass, cfg.project.class_parser)
-        base = {"Type": key.type, "Class": key.klass, "Filename": key.filename, **factors}
+        factors = ctx.factors()  # design-factor columns from the video's tag
+        base = {"video_id": vid, "filename": rec["filename"], **factors}
         factor_cols = list(factors.keys())
 
         # per-frame labels (tidy long)
         labels_df = pd.DataFrame(
             {**{k: [v] * n_frames for k, v in base.items()}, "frame": np.arange(n_frames), "label": labels}
-        )[["Type", "Class", "Filename", *factor_cols, "frame", "label"]]
+        )[["video_id", "filename", *factor_cols, "frame", "label"]]
 
         # per-cluster summary over range(n_clusters)
         counts = np.bincount(labels[labels >= 0], minlength=n_clusters)
@@ -138,11 +137,11 @@ class BsoidStage(Stage):
             for c in range(n_clusters)
         ]
         clusters_df = pd.DataFrame(cluster_rows)[
-            ["Type", "Class", "Filename", *factor_cols, "cluster", "frame_count", "time_s", "fraction"]
+            ["video_id", "filename", *factor_cols, "cluster", "frame_count", "time_s", "fraction"]
         ]
 
-        lp, lc = bsoid_labels_parquet(cfg, key), bsoid_labels_csv(cfg, key)
-        cp, cc = bsoid_clusters_parquet(cfg, key), bsoid_clusters_csv(cfg, key)
+        lp, lc = bsoid_labels_parquet(cfg, vid), bsoid_labels_csv(cfg, vid)
+        cp, cc = bsoid_clusters_parquet(cfg, vid), bsoid_clusters_csv(cfg, vid)
         lp.parent.mkdir(parents=True, exist_ok=True)
         labels_df.to_parquet(lp, index=False)  # for R (separate manual step); Python never calls R
         labels_df.to_csv(lc, index=False)
@@ -150,7 +149,7 @@ class BsoidStage(Stage):
         clusters_df.to_csv(cc, index=False)
 
         ctx.manifest.set_params(
-            key,
+            vid,
             self.name,
             {
                 "engine_requested": p.engine,
